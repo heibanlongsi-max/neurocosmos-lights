@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>NeuroCosmosLights v5</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; width:100vw; height:100vh; font-family:serif; }
+canvas { position:fixed; top:0; left:0; z-index:1; pointer-events:none; }
+#top-bar {
+  position:fixed; top:8px; left:50%; transform:translateX(-50%);
+  z-index:20; white-space:nowrap; font-size:12px; letter-spacing:2px;
+  pointer-events:none; text-align:center;
+  color:rgba(255,200,60,0.95); text-shadow:0 0 12px rgba(255,180,0,0.7);
+}
+#breath-el {
+  position:fixed; top:26px; left:50%; transform:translateX(-50%);
+  z-index:20; font-size:clamp(13px,3.8vw,24px); font-weight:bold;
+  letter-spacing:6px; pointer-events:none; white-space:nowrap;
+  text-shadow:0 0 16px currentColor;
+}
+#ui {
+  position:fixed; bottom:4px; left:50%; transform:translateX(-50%);
+  z-index:20; display:flex; flex-wrap:wrap;
+  gap:4px; justify-content:center; width:98vw;
+}
+button {
+  background:rgba(60,30,0,0.35); border:1px solid rgba(255,160,30,0.3);
+  color:rgba(255,170,40,0.85); padding:4px 7px; border-radius:10px;
+  cursor:pointer; font-size:10px; letter-spacing:1px;
+  -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+}
+button.active {
+  background:rgba(160,70,0,0.65); border-color:rgba(255,200,50,0.9);
+  color:#FFD040; box-shadow:0 0 8px rgba(255,180,0,0.5);
+}
+#btn-stop { border-color:rgba(255,80,80,0.35); color:rgba(255,130,130,0.85); }
+#btn-stop.active { background:rgba(140,20,20,0.6); }
+#btn-auto { border-color:rgba(255,140,0,0.4); color:rgba(255,180,60,0.9); }
+#btn-auto.active { background:rgba(150,60,0,0.6); border-color:rgba(255,200,0,0.9); }
+#btn-mic { border-color:rgba(255,200,80,0.4); color:rgba(255,220,100,0.85); }
+#btn-mic.active { background:rgba(120,80,0,0.6); border-color:rgba(255,220,80,0.8); }
+#btn-rev { border-color:rgba(255,120,0,0.4); color:rgba(255,160,60,0.85); }
+#btn-rev.active { background:rgba(130,50,0,0.6); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="top-bar">528 Hz｜愛・奇跡・癒やし・DNA修復</div>
+<div id="breath-el">Inhale</div>
+<div id="ui">
+  <button id="b174" onclick="setHz(174)">174</button>
+  <button id="b285" onclick="setHz(285)">285</button>
+  <button id="b396" onclick="setHz(396)">396</button>
+  <button id="b417" onclick="setHz(417)">417</button>
+  <button id="b528" class="active" onclick="setHz(528)">528</button>
+  <button id="b639" onclick="setHz(639)">639</button>
+  <button id="b741" onclick="setHz(741)">741</button>
+  <button id="b852" onclick="setHz(852)">852</button>
+  <button id="b963" onclick="setHz(963)">963</button>
+  <button id="bsound" onclick="toggleSound()">🔔</button>
+  <button id="spd1" class="active" onclick="setSpeed(1)">遅</button>
+  <button id="spd2" onclick="setSpeed(2)">中</button>
+  <button id="spd3" onclick="setSpeed(3)">速</button>
+  <button id="btn-rev" onclick="toggleReverse()">↩逆転</button>
+  <button id="btn-auto" onclick="toggleAuto()">🔄Auto</button>
+  <button id="btn-t10" onclick="startTimer(600)">⏱10分</button>
+  <button id="btn-t5"  onclick="startTimer(300)">⏱5分</button>
+  <button id="btn-mic" onclick="toggleMic()">🎤</button>
+  <button id="btn-stop" onclick="toggleStop()">⏹</button>
+</div>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H,cx,cy;
+
+let t=0, bp=0, hz=528, scale=0.015;
+let soundOn=false, aCtx=null, oscs=[];
+let stars=[];
+let stopped=false, animId=null;
+let reversed=false;
+let micActive=false, micStream=null, analyser=null, micData=null;
+let micVolume=0, rotBoost=1, micFlash=0;
+
+// ★縦横・3D移動用
+let posX=0, posY=0, posZ=0; // 現在位置オフセット
+let targetX=0, targetY=0, targetZ=0; // 目標位置
+let posTimer=0;
+// ★スケール揺らぎ
+let pulseOffset=0, pulseTarget=0, pulseTimer=0;
+// ★3D回転角
+let rotX=0, rotXTarget=0, rotY=0, rotYTarget=0, rot3DTimer=0;
+let horizRot=0;  // 水平(縦軸=Y軸)回転
+let vertRot=0;   // 垂直(横軸=X軸)回転
+let sphereR=1;   // 球面投影の基準半径（毎フレーム更新）
+
+// ★球面上に均等分布する点群を生成（フィボナッチ球面）
+function fibonacciSphere(n){
+  const pts=[];
+  const golden=Math.PI*(3-Math.sqrt(5));
+  for(let i=0;i<n;i++){
+    const yv=1-(i/(n-1))*2; // 1〜-1
+    const radius=Math.sqrt(Math.max(0,1-yv*yv));
+    const theta=golden*i;
+    const xv=Math.cos(theta)*radius;
+    const zv=Math.sin(theta)*radius;
+    pts.push({x:xv,y:yv,z:zv});
+  }
+  return pts;
+}
+
+// ★3D点(単位球上)を回転して2D投影
+function proj3D(px,py,pz,R){
+  const cy=Math.cos(horizRot), sy=Math.sin(horizRot);
+  let px2=px*cy+pz*sy;
+  let pz2=-px*sy+pz*cy;
+  const cx=Math.cos(vertRot), sx=Math.sin(vertRot);
+  let py2=py*cx-pz2*sx;
+  let pz3=py*sx+pz2*cx;
+  const depth=Math.max(0,Math.min(1,(pz3+1)/2));
+  const persp=0.6+depth*0.4;
+  return {x:px2*R*persp, y:py2*R*persp, depth, scale:persp};
+}
+// ★点滅位相
+let flickerPhases=Array.from({length:24},()=>Math.random()*Math.PI*2);
+let flickerSpeeds=Array.from({length:24},()=>Math.random()*0.06+0.01);
+// ★激しい閃光
+let flashes=[];
+let flowParts=[];
+let wobble=0, wobbleTarget=0, wobbleTimer=0;
+
+const RINGS=[
+  {r:0.92,n:24,lw:1.4,al:0.42,spd:0.003,dir:1},
+  {r:0.80,n:20,lw:1.0,al:0.34,spd:0.004,dir:-1},
+  {r:0.68,n:16,lw:1.3,al:0.40,spd:0.0035,dir:1},
+  {r:0.57,n:14,lw:0.9,al:0.36,spd:0.0045,dir:-1},
+  {r:0.44,n:12,lw:1.1,al:0.44,spd:0.006,dir:-1},
+  {r:0.33,n:10,lw:0.9,al:0.40,spd:0.007,dir:1},
+  {r:0.22,n:8, lw:1.0,al:0.46,spd:0.008,dir:-1},
+  {r:0.12,n:6, lw:1.1,al:0.50,spd:0.009,dir:1},
+];
+let ringA=RINGS.map(()=>0);
+
+const SP={1:{i:240,h1:180,e:480,h2:180},2:{i:180,h1:180,e:360,h2:180},3:{i:120,h1:180,e:240,h2:180}};
+let speed=1,phase='i',pf=0;
+const PCOL={i:'#FF9010',h1:'#FFD040',e:'#FFA030',h2:'#FFD040'};
+const PTXT={i:'Inhale',h1:'Hold',e:'Exhale',h2:'Hold'};
+
+const PAL={
+  174:{a:[255,140,20],b:[200,80,0],c:[255,200,80],line:'174 Hz｜痛みや不安の軽減・安心感'},
+  285:{a:[255,160,0],b:[220,100,0],c:[255,210,80],line:'285 Hz｜回復・再生・組織の修復'},
+  396:{a:[255,100,0],b:[200,50,0],c:[255,170,60],line:'396 Hz｜罪悪感や恐れからの解放'},
+  417:{a:[255,120,10],b:[210,60,0],c:[255,190,70],line:'417 Hz｜変化・過去の浄化・前向きな変容'},
+  528:{a:[255,200,0],b:[255,130,0],c:[255,230,100],line:'528 Hz｜愛・奇跡・癒やし・DNA修復'},
+  639:{a:[255,170,0],b:[220,110,0],c:[255,220,80],line:'639 Hz｜人間関係・調和・つながり'},
+  741:{a:[255,140,30],b:[200,80,10],c:[255,200,90],line:'741 Hz｜直感・自己表現・浄化'},
+  852:{a:[255,110,0],b:[210,60,0],c:[255,180,60],line:'852 Hz｜覚醒・直感・高い意識'},
+  963:{a:[255,220,80],b:[220,150,0],c:[255,240,140],line:'963 Hz｜宇宙意識・高次元とのつながり'},
+};
+
+function setSpeed(s){
+  speed=s;
+  [1,2,3].forEach(x=>document.getElementById('spd'+x).classList.remove('active'));
+  document.getElementById('spd'+s).classList.add('active');
+  phase='i';pf=0;
+}
+function initStars(){
+  stars=Array.from({length:280},()=>({
+    x:Math.random()*W,y:Math.random()*H,
+    r:Math.random()*1.5+0.2,
+    a:Math.random()*Math.PI*2,sp:Math.random()*0.005+0.001,
+    c:Math.random()<0.5?[255,180,60]:[255,220,120]
+  }));
+}
+function resize(){
+  W=cv.width=window.innerWidth;H=cv.height=window.innerHeight;
+  cx=W/2;cy=H/2;initStars();flashes=[];flowParts=[];
+}
+function getP(){return PAL[hz]||PAL[528];}
+function getMandalaArea(){
+  const topPad=50;
+  const ui=document.getElementById('ui');
+  const botPad=ui?(H-ui.getBoundingClientRect().top)+10:80;
+  const availH=H-topPad-botPad;
+  const centerY=topPad+availH*0.44;
+  const maxR=Math.min(W*0.38,availH*0.38);
+  return {centerY,maxR};
+}
+
+// ★閃光管理：1本ずつ順番に回り込む
+let flashAngle=0;
+let flashSpawnTimer=0;
+
+function spawnFlash(maxR,r1,g1,b1,force=false){
+  const isIn=(phase==='i'||phase==='h1');
+  // 1本ずつ角度を少しずつずらして回り込む
+  flashAngle+=0.22+Math.random()*0.18; // ゆっくり回転しながら放射
+  const type=Math.floor(Math.random()*3);
+  flashes.push({
+    type,
+    angle:flashAngle,
+    r:isIn?maxR*scale*0.08:maxR*scale*0.88,
+    life:1.0,
+    decay:0.025+Math.random()*0.035,
+    size:maxR*(0.012+Math.random()*0.05),
+    col:[r1,g1,b1],
+    dir:isIn?1:-1,
+    speed:maxR*(0.012+Math.random()*0.022),
+    spin:(Math.random()-0.5)*0.4,
+    ringR:type===2?maxR*scale*(0.08+Math.random()*0.3):0,
+    ringSpeed:type===2?(isIn?0.018:-0.018):0,
+    // 回り込み用：軌道をらせん状に
+    spiral:Math.random()<0.4, // 40%がらせん軌道
+    spiralRate:(Math.random()-0.5)*0.08,
+  });
+}
+
+// ★サーフボード形を球面上の投影位置(px,py)に描画
+// lr: 元の半径(サイズ基準), lw/al: 線幅・濃度, d3: 奥行き(0〜1), flicker: 点滅, sc: 遠近スケール
+function drawSurf3D(px,py,lr,lw,al,r1,g1,b1,d3,flicker,sc){
+  const scale3d=(0.30+d3*0.85)*sc;
+  const alphaD=al*flicker*(0.18+d3*0.9);
+  const sw=lr*0.05*scale3d*(0.8+bp*0.24);
+  const sh=lr*0.13*scale3d*(0.8+bp*0.24);
+  if(sh<0.3)return;
+  const ang=Math.atan2(py,px)+horizRot+Math.PI/2;
+  ctx.save();ctx.translate(px,py);ctx.rotate(ang);
+  const sgd=ctx.createLinearGradient(0,-sh,0,sh);
+  sgd.addColorStop(0,`rgba(${r1},${g1},${b1},0)`);
+  sgd.addColorStop(0.2,`rgba(255,230,120,${alphaD*1.5+micFlash*0.3})`);
+  sgd.addColorStop(0.5,`rgba(${r1},${g1},${b1},${alphaD*1.0+micFlash*0.2})`);
+  sgd.addColorStop(0.8,`rgba(255,230,120,${alphaD*1.5+micFlash*0.3})`);
+  sgd.addColorStop(1,`rgba(${r1},${g1},${b1},0)`);
+  ctx.beginPath();ctx.moveTo(0,-sh);ctx.bezierCurveTo(sw,-sh*0.22,sw,sh*0.22,0,sh);
+  ctx.bezierCurveTo(-sw,sh*0.22,-sw,-sh*0.22,0,-sh);ctx.closePath();
+  ctx.fillStyle=sgd;ctx.fill();ctx.restore();
+}
+
+// ★完全な球面分布グループ描画（8軸光点・花びら3層）
+// それぞれフィボナッチ球面で均等配置し、proj3Dで自転
+const SPHERE_GROUPS=[
+  {n:8,  ratio:0.95, kind:'axis',  spd:0.008},
+  {n:16, ratio:0.74, kind:'petal', spd:0.010, w:0.11, h:0.18},
+  {n:12, ratio:0.54, kind:'petal', spd:-0.014, w:0.09, h:0.16},
+  {n:8,  ratio:0.35, kind:'petal', spd:0.020, w:0.08, h:0.13},
+];
+let sphereGroupPts=SPHERE_GROUPS.map(g=>fibonacciSphere(g.n));
+let sphereGroupRot=SPHERE_GROUPS.map(()=>0);
+
+function drawSphereGroups(R, r1,g1,b1, r2,g2,b2, r3,g3,b3, rev){
+  const cols=[[r2,g2,b2],[r1,g1,b1],[r3,g3,b3]];
+  SPHERE_GROUPS.forEach((g,gi)=>{
+    if(g.kind!=='petal')return;
+    const lr=R*g.ratio;
+    const pts=sphereGroupPts[gi];
+    const rotSelf=sphereGroupRot[gi];
+    const [cr,cg,cb]=cols[(gi+2)%3];
+    pts.forEach((p,i)=>{
+      // 自グループの自転を加えた経度
+      const cosR=Math.cos(rotSelf), sinR=Math.sin(rotSelf);
+      const px0=p.x*cosR - p.z*sinR;
+      const pz0=p.x*sinR + p.z*cosR;
+      const pj=proj3D(px0,p.y,pz0,lr);
+      const d3=pj.depth, sc=pj.scale;
+      const flk=0.5+Math.sin(flickerPhases[(i+gi*7)%flickerPhases.length])*0.5;
+      const depthFactor=0.5+d3*0.6;
+      const al=(0.16+bp*0.07)*depthFactor*flk;
+      const ang=Math.atan2(pj.y,pj.x)+horizRot;
+      ctx.save();
+      ctx.translate(pj.x,pj.y);
+      ctx.rotate(ang+Math.PI);
+      const sc2=(0.3+d3*0.85)*sc;
+      ctx.scale(sc2,sc2);
+      petal(R*g.w,R*g.h,
+        `rgba(${cr},${cg},${cb},${(al+micFlash*0.1)*(0.2+d3*0.9)})`,
+        `rgba(255,210,80,${al*1.6*(0.2+d3*0.9)})`);
+      ctx.restore();
+    });
+  });
+
+  // ★8軸の光点（フィボナッチ分布の最外グループ）
+  {
+    const g=SPHERE_GROUPS[0];
+    const lr=R*g.ratio;
+    const pts=sphereGroupPts[0];
+    const rotSelf=sphereGroupRot[0];
+    const cosR=Math.cos(rotSelf), sinR=Math.sin(rotSelf);
+    let projected=pts.map((p,i)=>{
+      const px0=p.x*cosR - p.z*sinR;
+      const pz0=p.x*sinR + p.z*cosR;
+      const pj=proj3D(px0,p.y,pz0,lr);
+      return {pj,i};
+    });
+    projected.forEach(({pj,i})=>{
+      const d3=pj.depth, sc=pj.scale;
+      const flk=0.6+Math.sin(flickerPhases[i%flickerPhases.length])*0.4;
+      const alpha=(0.18+d3*0.7)*(1+micFlash*0.35);
+      // 中心から光点への放射ライン
+      const ox=pj.x*0.08, oy=pj.y*0.08; // 中心近く
+      const gd=ctx.createLinearGradient(ox,oy,pj.x,pj.y);
+      gd.addColorStop(0,`rgba(255,220,100,${alpha*0.4*flk})`);
+      gd.addColorStop(1,`rgba(${r1},${g1},${b1},0)`);
+      ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(pj.x,pj.y);
+      ctx.strokeStyle=gd;ctx.lineWidth=(0.5+d3*1.2)*sc;ctx.stroke();
+      // 光点
+      const vSize=(2.5+flk*4)*(0.25+d3*0.85)*sc;
+      if(vSize>0.3){
+        const vgd=ctx.createRadialGradient(pj.x,pj.y,0,pj.x,pj.y,vSize*2);
+        vgd.addColorStop(0,`rgba(255,240,180,${(0.6+d3*0.4+micFlash*0.2)*(0.2+d3*0.9)})`);
+        vgd.addColorStop(0.4,`rgba(${r1},${g1},${b1},${(0.3+d3*0.3)*(0.2+d3*0.9)})`);
+        vgd.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.beginPath();ctx.arc(pj.x,pj.y,vSize*2,0,Math.PI*2);ctx.fillStyle=vgd;ctx.fill();
+      }
+    });
+    // 隣接点同士を接続（球面ネットワーク）
+    for(let i=0;i<projected.length;i++){
+      for(let j=i+1;j<projected.length;j++){
+        const a=sphereGroupPts[0][i], b=sphereGroupPts[0][j];
+        const dot=a.x*b.x+a.y*b.y+a.z*b.z;
+        if(dot>0.55){ // 近い点のみ接続
+          const pa=projected[i].pj, pb=projected[j].pj;
+          const md3=Math.min(pa.depth,pb.depth);
+          const eAl=md3*0.25*(1+micFlash*0.2);
+          if(eAl>0.01){
+            ctx.beginPath();ctx.moveTo(pa.x,pa.y);ctx.lineTo(pb.x,pb.y);
+            ctx.strokeStyle=`rgba(${r1},${g1},${b1},${eAl})`;
+            ctx.lineWidth=0.5;ctx.stroke();
+          }
+        }
+      }
+    }
+  }
+}
+function petal(rw,rh,fill,stroke){
+  ctx.beginPath();ctx.moveTo(0,-rh);
+  ctx.bezierCurveTo(rw*0.55,-rh*0.35,rw*0.55,rh*0.35,0,rh);
+  ctx.bezierCurveTo(-rw*0.55,rh*0.35,-rw*0.55,-rh*0.35,0,-rh);
+  ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=0.6;ctx.stroke();}
+}
+
+// ★立体球形ワイヤーフレーム（回転＋拡大収縮）
+let sphereRotX=0, sphereRotY=0, sphereRotZ=0;
+let spherePulse=0;
+function drawWireSphere(baseR, r1,g1,b1){
+  // 拡大収縮（独立したパルス）
+  const sR=baseR*(0.85+spherePulse*0.3);
+  if(sR<2)return;
+
+  const cosX=Math.cos(sphereRotX), sinX=Math.sin(sphereRotX);
+  const cosY=Math.cos(sphereRotY), sinY=Math.sin(sphereRotY);
+  const cosZ=Math.cos(sphereRotZ), sinZ=Math.sin(sphereRotZ);
+
+  // 3D点を回転して2D投影する関数
+  function project(x,y,z){
+    // Y軸回転
+    let x1=x*cosY+z*sinY;
+    let z1=-x*sinY+z*cosY;
+    // X軸回転
+    let y1=y*cosX-z1*sinX;
+    let z2=y*sinX+z1*cosX;
+    // ★Z軸回転（水平面での傾き・横方向の回転を強調）
+    let x2=x1*cosZ-y1*sinZ;
+    let y2=x1*sinZ+y1*cosZ;
+    return {x:x2, y:y2, z:z2};
+  }
+
+  const segs=20;
+  // 緯線（latitude）：水平の円
+  for(let lat=-2;lat<=2;lat++){
+    const phi=(lat/3)*Math.PI/2; // -60°〜60°
+    const ringR=Math.cos(phi);
+    const yOff=Math.sin(phi);
+    let pts=[];
+    for(let i=0;i<=segs;i++){
+      const theta=(i/segs)*Math.PI*2;
+      const x=Math.cos(theta)*ringR;
+      const z=Math.sin(theta)*ringR;
+      const y=yOff;
+      pts.push(project(x,y,z));
+    }
+    ctx.beginPath();
+    pts.forEach((p,i)=>{
+      const px=p.x*sR, py=p.y*sR;
+      i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    });
+    // 平均z（奥行き）で透明度
+    const avgZ=pts.reduce((a,p)=>a+p.z,0)/pts.length;
+    const al=(0.15+ (avgZ+1)*0.5*0.35)*(0.7+bp*0.3);
+    ctx.strokeStyle=`rgba(${r1},${g1},${b1},${al})`;
+    ctx.lineWidth=0.7;ctx.stroke();
+  }
+
+  // 経線（longitude）：縦の円
+  for(let lon=0;lon<6;lon++){
+    const baseAngle=(lon/6)*Math.PI;
+    let pts=[];
+    for(let i=0;i<=segs;i++){
+      const theta=(i/segs)*Math.PI*2;
+      const x=Math.cos(theta)*Math.sin(baseAngle);
+      const z=Math.cos(theta)*Math.cos(baseAngle);
+      const y=Math.sin(theta);
+      pts.push(project(x,y,z));
+    }
+    ctx.beginPath();
+    pts.forEach((p,i)=>{
+      const px=p.x*sR, py=p.y*sR;
+      i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    });
+    const avgZ=pts.reduce((a,p)=>a+p.z,0)/pts.length;
+    const al=(0.12+(avgZ+1)*0.5*0.32)*(0.7+bp*0.3);
+    ctx.strokeStyle=`rgba(255,${200+Math.floor((avgZ+1)*27)},${60+Math.floor((avgZ+1)*40)},${al+micFlash*0.15})`;
+    ctx.lineWidth=0.6;ctx.stroke();
+  }
+
+  // 手前側の交点に光る粒
+  for(let lon=0;lon<6;lon++){
+    const baseAngle=(lon/6)*Math.PI;
+    for(let lat=-1;lat<=1;lat++){
+      const phi=(lat/2)*Math.PI/2.2;
+      const theta=baseAngle;
+      const x=Math.cos(theta)*Math.cos(phi);
+      const z=Math.sin(theta)*Math.cos(phi);
+      const y=Math.sin(phi);
+      const p=project(x,y,z);
+      if(p.z>0.2){ // 手前側のみ
+        const px=p.x*sR, py=p.y*sR;
+        const glowAl=(p.z)*0.8*(0.7+micFlash*0.3);
+        ctx.beginPath();ctx.arc(px,py,1.5+p.z*1.5,0,Math.PI*2);
+        ctx.fillStyle=`rgba(255,240,180,${glowAl})`;ctx.fill();
+      }
+    }
+  }
+}
+
+function spawnFlow(maxR,r1,g1,b1){
+  flowParts.push({
+    angle:Math.random()*Math.PI*2,r:maxR*(0.88+Math.random()*0.18),
+    speed:maxR*(0.004+Math.random()*0.005),size:Math.random()*2.2+0.8,
+    col:[r1,g1,b1],wobA:Math.random()*Math.PI*2,
+    wobSpd:Math.random()*0.06+0.02,wobAmp:Math.random()*14+6,
+  });
+}
+
+function draw(){
+  ctx.fillStyle='rgba(0,0,4,0.12)';
+  ctx.fillRect(0,0,W,H);
+  const P=getP();
+  const [r1,g1,b1]=P.a,[r2,g2,b2]=P.b,[r3,g3,b3]=P.c;
+
+  // 星（オレンジ系）
+  stars.forEach(s=>{
+    s.a+=s.sp;
+    const al=(Math.sin(s.a)+1)/2*0.7+0.1;
+    ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${s.c[0]},${s.c[1]},${s.c[2]},${al})`;ctx.fill();
+  });
+
+  const {centerY,maxR}=getMandalaArea();
+  scale=Math.max(0.01,Math.min(1.08,0.015+bp*0.985+pulseOffset));
+  const R=maxR*scale;
+  const rev=reversed?-1:1;
+
+  if(Math.random()<0.14) spawnFlow(maxR,r1,g1,b1);
+
+  // ★閃光：1本ずつ順番に、間隔を変えながら
+  flashSpawnTimer--;
+  if(flashSpawnTimer<=0){
+    spawnFlash(maxR,r1,g1,b1);
+    // 次の発射タイミング（不規則に変化）
+    flashSpawnInterval=Math.floor(Math.random()*20+4);
+    flashSpawnTimer=flashSpawnInterval;
+  }
+  // マイク反応：間隔を短くする
+  if(micFlash>0.5){
+    flashSpawnTimer=Math.min(flashSpawnTimer,2);
+  }
+
+  wobbleTimer--;
+  if(wobbleTimer<=0){wobbleTarget=(Math.random()-0.5)*0.07;wobbleTimer=Math.floor(Math.random()*60+30);}
+  wobble+=(wobbleTarget-wobble)*0.04;
+
+  // ★立体移動（縦横Z）：曼荼羅全体が3D的に浮遊
+  const drawCX=cx+posX;
+  const drawCY=centerY+posY;
+  // Z軸はスケールで表現
+  const zScale=1+posZ*0.15;
+
+  ctx.save();
+  ctx.translate(drawCX, drawCY);
+  // ★立体傾き（ランダム揺らぎ）。水平回転は個々の要素の球面投影で表現
+  ctx.transform(
+    Math.cos(rotY)*zScale, Math.sin(rotX)*zScale,
+    -Math.sin(rotX)*zScale, Math.cos(rotX)*zScale,
+    0, 0
+  );
+  sphereR=R; // ★球面投影の基準半径を共有
+
+  // 背景オーラ
+  for(let i=3;i>=0;i--){
+    const or=R*(1.4+i*0.3);if(or<2)continue;
+    const gd=ctx.createRadialGradient(0,0,R*0.15,0,0,or);
+    gd.addColorStop(0,'rgba(0,0,0,0)');
+    gd.addColorStop(0.4,`rgba(${r1},${Math.floor(g1*0.5)},0,${0.055-i*0.01+micFlash*0.07})`);
+    gd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.beginPath();ctx.arc(0,0,or,0,Math.PI*2);ctx.fillStyle=gd;ctx.fill();
+  }
+
+  // 銀河アーム8本
+  ctx.save();ctx.rotate(t*0.018*rev+wobble);
+  for(let arm=0;arm<8;arm++){
+    ctx.save();ctx.rotate((arm/8)*Math.PI*2);
+    const agd=ctx.createLinearGradient(0,0,R*1.05,0);
+    agd.addColorStop(0,`rgba(${r1},${g1},${b1},0)`);
+    agd.addColorStop(0.2,`rgba(${r1},${g1},${b1},0.14)`);
+    agd.addColorStop(0.6,`rgba(${r2},${g2},${b2},0.07)`);
+    agd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.beginPath();ctx.ellipse(R*0.4,0,R*0.62,Math.max(0.3,R*0.036),0,0,Math.PI*2);
+    ctx.fillStyle=agd;ctx.fill();ctx.restore();
+  }ctx.restore();
+
+  // ★完全な球面分布：8軸・リング装飾・花びら3層を統一して描画
+  // それぞれのグループは異なる「緯度バンド」に均等配置し、
+  // 自転(horizRot)・極軸回転(vertRot)で全方位に動く
+  drawSphereGroups(R, r1,g1,b1, r2,g2,b2, r3,g3,b3, rev);
+
+  // リング軌道線（薄い円・球面ラインとして）
+  [...RINGS].reverse().forEach((rd,ridx)=>{
+    const idx=RINGS.length-1-ridx;
+    const lr=R*rd.r;if(lr<1.5)return;
+    const ang=ringA[idx];
+    const n=rd.n,seg=(Math.PI*2)/n,draw=seg*0.68;
+    const depth=idx/(RINGS.length-1);
+    for(let s=0;s<n;s++){
+      const a0=ang+s*seg,a1=a0+draw,amid=a0+draw*0.5;
+      // ★各セグメント中心を球面上の点として配置（緯度=リングごとに固定）
+      const lat=(depth-0.5)*Math.PI*0.85; // -約76°〜76°
+      const lon=amid;
+      const px=Math.sin(lon)*Math.cos(lat);
+      const py=Math.sin(lat);
+      const pz=Math.cos(lon)*Math.cos(lat);
+      const pj=proj3D(px,py,pz,lr);
+      const d3=pj.depth, sc=pj.scale;
+      const flk=0.5+Math.sin(flickerPhases[(idx+s*3)%flickerPhases.length])*0.5;
+      const segLen=lr*draw*sc;
+      ctx.save();
+      ctx.translate(pj.x,pj.y);
+      ctx.rotate(amid+horizRot+Math.PI/2);
+      ctx.beginPath();ctx.moveTo(-segLen*0.5,0);ctx.lineTo(segLen*0.5,0);
+      ctx.strokeStyle=`rgba(${r1},${g1},${b1},${(rd.al+bp*0.06)*(0.4+depth*0.6)*flk*(0.2+d3*0.9)})`;
+      ctx.lineWidth=rd.lw*(0.5+depth*0.8)*(0.3+d3*0.9);ctx.stroke();
+      ctx.restore();
+      drawSurf3D(pj.x,pj.y,lr,rd.lw,rd.al,r1,g1,b1,d3,flk,sc);
+    }
+  });
+
+
+  // 六芒星
+  ctx.save();ctx.rotate(-t*0.022*rev+wobble);
+  for(let tri=0;tri<2;tri++){
+    const d=(Math.sin(tri*Math.PI+t*0.04)+1)/2;
+    ctx.save();ctx.rotate(tri*Math.PI/3);ctx.scale(1,0.65+d*0.38);
+    const gr=R*0.44;if(gr>0.5){
+      ctx.beginPath();
+      for(let i=0;i<3;i++){const a=(i/3)*Math.PI*2-Math.PI/2;i===0?ctx.moveTo(Math.cos(a)*gr,Math.sin(a)*gr):ctx.lineTo(Math.cos(a)*gr,Math.sin(a)*gr);}
+      ctx.closePath();
+      ctx.strokeStyle=`rgba(${r1},${g1},${b1},${0.46+bp*0.12+micFlash*0.2})`;
+      ctx.lineWidth=1.0;ctx.stroke();
+      ctx.fillStyle=`rgba(${r1},${g1},${b1},0.022)`;ctx.fill();
+    }ctx.restore();
+  }ctx.restore();
+
+  ctx.save();ctx.rotate(t*0.030*rev-wobble*0.5);
+  for(let tri=0;tri<2;tri++){
+    const d=(Math.sin(tri*Math.PI+t*0.06)+1)/2;
+    ctx.save();ctx.rotate(tri*Math.PI/3+Math.PI/6);ctx.scale(1,0.65+d*0.38);
+    const gr=R*0.27;if(gr>0.3){
+      ctx.beginPath();
+      for(let i=0;i<3;i++){const a=(i/3)*Math.PI*2-Math.PI/2;i===0?ctx.moveTo(Math.cos(a)*gr,Math.sin(a)*gr):ctx.lineTo(Math.cos(a)*gr,Math.sin(a)*gr);}
+      ctx.closePath();
+      ctx.strokeStyle=`rgba(${r1},${g1},${b1},${0.40+bp*0.12+micFlash*0.12})`;
+      ctx.lineWidth=0.8;ctx.stroke();
+    }ctx.restore();
+  }ctx.restore();
+
+  // スポーク
+  ctx.save();ctx.rotate(t*0.010*rev+wobble*0.3);
+  for(let i=0;i<48;i++){
+    const a=(i/48)*Math.PI*2;
+    const sf=0.5+Math.sin(flickerPhases[i%flickerPhases.length]*1.3)*0.5;
+    const outer=R*(0.40+Math.sin(t*0.7+i*0.3)*0.04);if(outer<1)continue;
+    const gd=ctx.createLinearGradient(Math.cos(a)*R*0.05,Math.sin(a)*R*0.05,Math.cos(a)*outer,Math.sin(a)*outer);
+    gd.addColorStop(0,`rgba(${r1},${g1},${b1},${(0.30+bp*0.07+micFlash*0.1)*sf})`);
+    gd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.beginPath();ctx.moveTo(Math.cos(a)*R*0.05,Math.sin(a)*R*0.05);ctx.lineTo(Math.cos(a)*outer,Math.sin(a)*outer);
+    ctx.strokeStyle=gd;ctx.lineWidth=i%8===0?0.9:0.3;ctx.stroke();
+  }ctx.restore();
+
+  // フローパーティクル
+  flowParts=flowParts.filter(p=>{
+    p.r-=p.speed*rotBoost;p.wobA+=p.wobSpd;
+    if(p.r<=maxR*0.07)return false;
+    const wo=Math.sin(p.wobA)*p.wobAmp*(p.r/maxR);
+    const px=Math.cos(p.angle)*p.r+Math.cos(p.angle+Math.PI/2)*wo;
+    const py=Math.sin(p.angle)*p.r+Math.sin(p.angle+Math.PI/2)*wo;
+    const br=1-p.r/maxR;
+    ctx.beginPath();ctx.arc(px,py,p.size*(0.5+br*0.8),0,Math.PI*2);
+    ctx.fillStyle=`rgba(${p.col[0]},${p.col[1]},${p.col[2]},${0.3+br*0.7})`;ctx.fill();
+    ctx.beginPath();ctx.arc(px,py,p.size*2.5,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${p.col[0]},${p.col[1]},${p.col[2]},${(0.3+br*0.7)*0.13})`;ctx.fill();
+    return true;
+  });
+
+  // ★閃光（1本ずつ回り込む）
+  flashes=flashes.filter(f=>{
+    f.life-=f.decay;
+    if(f.life<=0)return false;
+    const al=f.life;
+
+    // らせん軌道：角度を少しずつ変えながら移動
+    if(f.spiral) f.angle+=f.spiralRate*(1-f.life*0.5);
+    f.r+=f.speed*f.dir;
+
+    const fx=Math.cos(f.angle)*f.r;
+    const fy=Math.sin(f.angle)*f.r;
+
+    if(f.type===0){
+      // 流れ星（回り込みながら移動）
+      ctx.save();
+      ctx.shadowBlur=f.size*5;ctx.shadowColor=`rgba(255,200,60,${al})`;
+      ctx.beginPath();ctx.arc(fx,fy,f.size*al*1.2,0,Math.PI*2);
+      ctx.fillStyle=`rgba(255,240,140,${al})`;ctx.fill();
+      // 尾（移動方向の逆に伸びる）
+      const tailLen=f.size*9*al;
+      const tailAngle=f.angle+Math.PI+(f.spiral?f.spiralRate*2:0);
+      const gd=ctx.createLinearGradient(fx,fy,fx+Math.cos(tailAngle)*tailLen,fy+Math.sin(tailAngle)*tailLen);
+      gd.addColorStop(0,`rgba(255,200,60,${al*0.9})`);
+      gd.addColorStop(0.5,`rgba(255,140,0,${al*0.4})`);
+      gd.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.beginPath();ctx.moveTo(fx,fy);
+      ctx.lineTo(fx+Math.cos(tailAngle)*tailLen,fy+Math.sin(tailAngle)*tailLen);
+      ctx.strokeStyle=gd;ctx.lineWidth=f.size*1.2*al;ctx.stroke();
+      ctx.shadowBlur=0;ctx.restore();
+
+    } else if(f.type===1){
+      // 放射閃光（中心から1本の光線が伸びる）
+      ctx.save();
+      ctx.translate(fx,fy);ctx.rotate(f.angle+f.spin*t);
+      const rayLen=f.size*(5+al*10)*al;
+      // 1本の光線（細く鋭く）
+      const rgd=ctx.createLinearGradient(0,0,rayLen,0);
+      rgd.addColorStop(0,`rgba(255,255,200,${al})`);
+      rgd.addColorStop(0.3,`rgba(255,200,60,${al*0.8})`);
+      rgd.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(rayLen,0);
+      ctx.strokeStyle=rgd;ctx.lineWidth=1.5+al*2;
+      ctx.shadowBlur=f.size*4;ctx.shadowColor=`rgba(255,180,0,${al})`;
+      ctx.stroke();
+      // 反対方向にも短く
+      const rgd2=ctx.createLinearGradient(0,0,-rayLen*0.4,0);
+      rgd2.addColorStop(0,`rgba(255,220,80,${al*0.6})`);
+      rgd2.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(-rayLen*0.4,0);
+      ctx.strokeStyle=rgd2;ctx.lineWidth=1.0+al;ctx.stroke();
+      ctx.shadowBlur=0;ctx.restore();
+
+    } else {
+      // リング閃光（外に広がる）
+      f.ringR+=f.ringSpeed*maxR;
+      const rr=Math.abs(f.ringR);
+      if(rr<maxR*1.5&&rr>0){
+        ctx.save();
+        ctx.beginPath();
+        // 部分的な弧（回り込んでいる感）
+        const arcStart=f.angle-0.5*al;
+        const arcEnd=f.angle+Math.PI*1.5*al;
+        ctx.arc(0,0,rr,arcStart,arcEnd);
+        ctx.strokeStyle=`rgba(255,180,40,${al*0.6})`;
+        ctx.lineWidth=f.size*2.5*al;
+        ctx.shadowBlur=f.size*7;ctx.shadowColor=`rgba(255,160,0,${al})`;
+        ctx.stroke();ctx.shadowBlur=0;ctx.restore();
+      }
+    }
+    return true;
+  });
+
+  // 中心コア
+  const cR=Math.max(5,R*0.16);
+  for(let i=3;i>=0;i--){
+    const lr2=cR*(1+i*0.5);
+    const gd=ctx.createRadialGradient(0,0,0,0,0,lr2);
+    gd.addColorStop(0,`rgba(255,240,180,${(0.35-i*0.06+micFlash*0.1)*(0.7+bp*0.3)})`);
+    gd.addColorStop(0.3,`rgba(${r1},${g1},${b1},${(0.20-i*0.04+micFlash*0.08)*(0.7+bp*0.3)})`);
+    gd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.beginPath();ctx.arc(0,0,lr2,0,Math.PI*2);ctx.fillStyle=gd;ctx.fill();
+  }
+  const igR=Math.max(2,R*0.04);
+  const igd=ctx.createRadialGradient(0,0,0,0,0,igR);
+  igd.addColorStop(0,'rgba(255,255,255,1)');
+  igd.addColorStop(0.5,`rgba(255,200,60,${0.7+micFlash*0.3})`);
+  igd.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.beginPath();ctx.arc(0,0,igR,0,Math.PI*2);ctx.fillStyle=igd;ctx.fill();
+
+  // ★立体球形ワイヤーフレーム（回転＋拡大収縮）
+  drawWireSphere(R*0.30,r1,g1,b1);
+
+  ctx.restore();
+
+  // ★音量インジケータ（マイクON時・左側縦バー）
+  if(micActive){
+    const barW=22, barH=Math.min(180,H*0.35);
+    const barX=12, barY=(H-barH)/2;
+    const pct=Math.min(1,micVolume/2.0);
+    ctx.save();
+    // 外枠グロー
+    ctx.shadowBlur=10;ctx.shadowColor='rgba(255,160,0,0.8)';
+    // 背景（明るめ）
+    ctx.fillStyle='rgba(80,50,10,0.9)';
+    ctx.fillRect(barX,barY,barW,barH);
+    ctx.shadowBlur=0;
+    // 枠線（太く明るく）
+    ctx.strokeStyle='rgba(255,200,80,0.95)';
+    ctx.lineWidth=2;
+    ctx.strokeRect(barX,barY,barW,barH);
+    // レベルバー
+    const fillH=Math.max(3,barH*pct);
+    const g=ctx.createLinearGradient(0,barY+barH,0,barY);
+    g.addColorStop(0,'rgba(255,230,40,1)');
+    g.addColorStop(0.5,'rgba(255,150,0,1)');
+    g.addColorStop(1,'rgba(255,60,0,1)');
+    ctx.fillStyle=g;
+    ctx.shadowBlur=14;ctx.shadowColor='rgba(255,200,0,0.9)';
+    ctx.fillRect(barX+2,barY+barH-fillH,barW-4,fillH-2);
+    ctx.shadowBlur=0;
+    // ラベル
+    ctx.font='bold 12px monospace';ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.fillStyle='rgba(255,230,150,0.95)';
+    ctx.fillText('VOL',barX+barW/2,barY+barH+6);
+    // 数値表示
+    ctx.font='10px monospace';
+    ctx.fillText(Math.round(pct*100)+'%',barX+barW/2,barY-14);
+    ctx.restore();
+  }
+
+  // Autoバー
+  if(autoOn){
+    const ui=document.getElementById('ui');
+    const uiR=ui?ui.getBoundingClientRect():{top:H-64};
+    const barW=160,barH=5,barX=cx-80,barY=uiR.top-18;
+    const pct=Math.min(1,autoFrames/AUTO_INTERVAL);
+    ctx.save();
+    ctx.fillStyle='rgba(40,20,0,0.75)';
+    ctx.fillRect(barX,barY,barW,barH);
+    if(pct>0){
+      const g=ctx.createLinearGradient(barX,0,barX+barW,0);
+      g.addColorStop(0,'rgba(255,120,0,0.95)');g.addColorStop(1,'rgba(255,220,0,0.95)');
+      ctx.fillStyle=g;ctx.fillRect(barX,barY,barW*pct,barH);
+    }
+    ctx.font='10px monospace';ctx.textAlign='center';ctx.textBaseline='bottom';
+    ctx.fillStyle='rgba(255,200,80,0.85)';
+    ctx.fillText(hz+'Hz  次まで'+Math.ceil((AUTO_INTERVAL-autoFrames)/60)+'秒',cx,barY-2);
+    ctx.restore();
+  }
+
+  // タイマー
+  if(timerOn||timerSec<timerTotal){
+    const ui=document.getElementById('ui');
+    const uiR=ui?ui.getBoundingClientRect():{top:H-64};
+    const m=Math.floor(timerSec/60),s=timerSec%60;
+    const txt=timerSec<=0?'終了':String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+    const col=timerSec<=60?'rgba(255,100,60,0.95)':timerSec<=180?'rgba(255,160,40,0.95)':'rgba(255,210,0,0.95)';
+    ctx.save();ctx.font='bold 22px monospace';
+    ctx.textAlign='right';ctx.textBaseline='bottom';
+    ctx.shadowColor=col;ctx.shadowBlur=12;ctx.fillStyle=col;
+    ctx.fillText(txt,W-10,uiR.top-(autoOn?30:8));
+    ctx.shadowBlur=0;ctx.restore();
+  }
+}
+
+const breathEl=document.getElementById('breath-el');
+function updateBreath(){
+  const sp=SP[speed];const order=['i','h1','e','h2'];
+  const lens={i:sp.i,h1:sp.h1,e:sp.e,h2:sp.h2};
+  pf++;if(pf>=lens[phase]){pf=0;phase=order[(order.indexOf(phase)+1)%4];}
+  const len=lens[phase];
+  if(phase==='i') bp=len>0?pf/len:1;
+  else if(phase==='h1') bp=1;
+  else if(phase==='e') bp=len>0?1-pf/len:0;
+  else bp=0;
+  bp=Math.max(0,Math.min(1,bp));
+  breathEl.textContent=PTXT[phase];breathEl.style.color=PCOL[phase];
+}
+
+function updateRings(){
+  const rev=reversed?-1:1;
+  RINGS.forEach((rd,idx)=>{ringA[idx]+=rd.spd*rd.dir*rotBoost*rev;});
+  // ★立体球形の回転・拡大収縮
+  sphereRotX+=0.006*rotBoost*rev;
+  sphereRotY+=0.009*rotBoost;
+  sphereRotZ+=0.004*rotBoost*rev;
+  // ★全体の連続水平回転（ゆっくり1周）
+  horizRot+=0.006*rotBoost*rev;
+  vertRot+=0.0038*rotBoost; // ★垂直回転（水平とは別速度・別方向感）
+  spherePulse=Math.sin(t*0.6)*0.5+Math.sin(t*0.23)*0.3;
+  flickerPhases.forEach((_,i)=>{flickerPhases[i]+=flickerSpeeds[i];});
+  // ★各球面グループの自転（個別速度・グループごとに見え方を変える）
+  SPHERE_GROUPS.forEach((g,gi)=>{sphereGroupRot[gi]+=g.spd*rotBoost*rev;});
+
+  // ★ランダム点滅
+  pulseTimer--;
+  if(pulseTimer<=0){
+    pulseTarget=(Math.random()-0.5)*0.10;
+    pulseTimer=Math.floor(Math.random()*90+40);
+  }
+  pulseOffset+=(pulseTarget-pulseOffset)*0.025;
+
+  // ★縦横に移動（不規則）
+  posTimer--;
+  if(posTimer<=0){
+    const {centerY,maxR}=getMandalaArea();
+    const range=maxR*0.12;
+    targetX=(Math.random()-0.5)*range;
+    targetY=(Math.random()-0.5)*range;
+    targetZ=(Math.random()-0.5)*0.4;
+    posTimer=Math.floor(Math.random()*150+80);
+  }
+  posX+=(targetX-posX)*0.012;
+  posY+=(targetY-posY)*0.012;
+  posZ+=(targetZ-posZ)*0.012;
+
+  // ★3D傾き（不規則）
+  rot3DTimer--;
+  if(rot3DTimer<=0){
+    rotXTarget=(Math.random()-0.5)*0.18;
+    rotYTarget=(Math.random()-0.5)*0.14;
+    rot3DTimer=Math.floor(Math.random()*200+100);
+  }
+  rotX+=(rotXTarget-rotX)*0.008;
+  rotY+=(rotYTarget-rotY)*0.008;
+
+  wobbleTimer--;
+  if(wobbleTimer<=0){wobbleTarget=(Math.random()-0.5)*0.07;wobbleTimer=Math.floor(Math.random()*60+30);}
+  wobble+=(wobbleTarget-wobble)*0.04;
+}
+
+function updateMic(){
+  if(!analyser||!micData){rotBoost=Math.max(1,rotBoost*0.97);micFlash=Math.max(0,micFlash*0.9);return;}
+  analyser.getByteFrequencyData(micData);
+  const avg=micData.reduce((a,v)=>a+v,0)/micData.length;
+  const max=Math.max(...micData);
+  // ★感度を大幅アップ：平均と最大値を組み合わせ、係数を20倍に
+  micVolume=Math.min(2.0,((avg*0.5+max*0.5)/255)*5);
+  rotBoost=rotBoost*0.72+(1+micVolume*6)*0.28;
+  micFlash=Math.min(1.0,micFlash*0.6+micVolume*0.6);
+}
+
+function toggleReverse(){
+  reversed=!reversed;
+  const btn=document.getElementById('btn-rev');
+  if(reversed){btn.textContent='↪正転';btn.classList.add('active');}
+  else{btn.textContent='↩逆転';btn.classList.remove('active');}
+}
+
+async function toggleMic(){
+  const btn=document.getElementById('btn-mic');
+  if(micActive){
+    if(micStream)micStream.getTracks().forEach(tr=>tr.stop());
+    micStream=null;analyser=null;micData=null;
+    micActive=false;micVolume=0;rotBoost=1;micFlash=0;
+    btn.textContent='🎤';btn.classList.remove('active');return;
+  }
+  try{
+    if(!aCtx)aCtx=new(window.AudioContext||window.webkitAudioContext)();
+    if(aCtx.state==='suspended')await aCtx.resume();
+    micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
+    const src=aCtx.createMediaStreamSource(micStream);
+    analyser=aCtx.createAnalyser();
+    analyser.fftSize=512;analyser.smoothingTimeConstant=0.5;
+    analyser.minDecibels=-90;analyser.maxDecibels=-10;
+    micData=new Uint8Array(analyser.frequencyBinCount);
+    src.connect(analyser);
+    micActive=true;btn.textContent='🎤ON';btn.classList.add('active');
+  }catch(e){btn.textContent='⚠許可';setTimeout(()=>{btn.textContent='🎤';btn.classList.remove('active');},2500);}
+}
+
+const HZ_LIST=[174,285,396,417,528,639,741,852,963];
+let autoOn=false,autoIdx=4,autoDir=1,autoFrames=0;
+const AUTO_INTERVAL=1800;
+function toggleAuto(){
+  autoOn=!autoOn;
+  const btn=document.getElementById('btn-auto');
+  if(autoOn){
+    btn.textContent='🔄停止';btn.classList.add('active');
+    autoIdx=Math.max(0,HZ_LIST.indexOf(hz));
+    autoFrames=0;setHz(HZ_LIST[autoIdx]);
+  }else{btn.textContent='🔄Auto';btn.classList.remove('active');}
+}
+function updateAuto(){
+  if(!autoOn)return;
+  autoFrames++;
+  if(autoFrames>=AUTO_INTERVAL){
+    autoFrames=0;autoIdx+=autoDir;
+    if(autoIdx>=HZ_LIST.length){autoIdx=HZ_LIST.length-2;autoDir=-1;}
+    if(autoIdx<0){autoIdx=1;autoDir=1;}
+    setHz(HZ_LIST[autoIdx]);
+  }
+}
+
+let timerOn=false,timerSec=600,timerTotal=600,timerInterval=null;
+function startTimer(sec){
+  if(timerInterval){clearInterval(timerInterval);timerInterval=null;}
+  ['btn-t10','btn-t5'].forEach(id=>{
+    const b=document.getElementById(id);
+    if(b){b.textContent=id==='btn-t10'?'⏱10分':'⏱5分';b.classList.remove('active');}
+  });
+  if(timerOn&&timerTotal===sec){timerOn=false;timerSec=sec;return;}
+  timerTotal=sec;timerSec=sec;timerOn=true;
+  const btn=document.getElementById(sec===600?'btn-t10':'btn-t5');
+  if(btn){btn.textContent='⏱停止';btn.classList.add('active');}
+  timerInterval=setInterval(()=>{
+    timerSec--;
+    if(timerSec<=0){
+      timerSec=0;clearInterval(timerInterval);timerInterval=null;timerOn=false;
+      if(btn){btn.textContent=sec===600?'⏱10分':'⏱5分';btn.classList.remove('active');}
+      if(soundOn)toggleSound();
+      stopped=true;
+      const sb=document.getElementById('btn-stop');
+      if(sb){sb.textContent='▶';sb.classList.add('active');}
+      if(animId){cancelAnimationFrame(animId);animId=null;}
+    }
+  },1000);
+}
+
+function setHz(h){
+  hz=h;
+  Object.keys(PAL).forEach(x=>{const b=document.getElementById('b'+x);if(b)b.classList.remove('active');});
+  const btn=document.getElementById('b'+h);if(btn)btn.classList.add('active');
+  document.getElementById('top-bar').textContent=PAL[h].line;
+  if(soundOn){stopSound();startSound();}
+}
+function startSound(){
+  if(!aCtx)return;
+  [[hz,0.06,0.07],[hz*1.5,0.02,0.11],[hz*0.5,0.02,0.05],[hz*2,0.01,0.13],[hz*1.25,0.009,0.09],[hz*0.75,0.009,0.06]].forEach(([f,v,lf])=>{
+    try{
+      const o=aCtx.createOscillator(),g=aCtx.createGain();
+      const lfo=aCtx.createOscillator(),lg=aCtx.createGain();
+      lfo.type='sine';lfo.frequency.value=lf;lg.gain.value=f*0.004;
+      lfo.connect(lg);lg.connect(o.frequency);lfo.start();
+      o.type='sine';o.frequency.value=f;
+      g.gain.setValueAtTime(0,aCtx.currentTime);
+      g.gain.linearRampToValueAtTime(v,aCtx.currentTime+2.5);
+      o.connect(g);g.connect(aCtx.destination);o.start();oscs.push({o,g,lfo});
+    }catch(e){}
+  });
+}
+function stopSound(){
+  oscs.forEach(({o,g,lfo})=>{try{g.gain.setTargetAtTime(0,aCtx.currentTime,0.5);setTimeout(()=>{try{o.stop();}catch(e){}try{lfo.stop();}catch(e){}},800);}catch(e){}});
+  oscs=[];
+}
+function initAudio(){if(!aCtx)try{aCtx=new(window.AudioContext||window.webkitAudioContext)();}catch(e){}if(aCtx&&aCtx.state==='suspended')aCtx.resume();}
+function toggleSound(){
+  initAudio();soundOn=!soundOn;
+  const btn=document.getElementById('bsound');
+  if(soundOn){startSound();btn.textContent='🔕';btn.classList.add('active');}
+  else{stopSound();btn.textContent='🔔';btn.classList.remove('active');}
+}
+function toggleStop(){
+  stopped=!stopped;
+  const btn=document.getElementById('btn-stop');
+  if(stopped){btn.textContent='▶';btn.classList.add('active');if(animId){cancelAnimationFrame(animId);animId=null;}}
+  else{btn.textContent='⏹';btn.classList.remove('active');loop();}
+}
+function loop(){
+  t+=0.008;updateBreath();updateRings();updateMic();updateAuto();draw();
+  animId=requestAnimationFrame(loop);
+}
+window.addEventListener('resize',resize);
+resize();loop();
+</script>
+</body>
+</html>
