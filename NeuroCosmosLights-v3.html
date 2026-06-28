@@ -846,7 +846,7 @@ function startTimer(sec){
   if(btn){btn.textContent='⏱停止';btn.classList.add('active');}
   timerInterval=setInterval(()=>{
     timerSec--;
-    if(timerSec<=0){
+    if(timerSec<0){
       timerSec=0;clearInterval(timerInterval);timerInterval=null;timerOn=false;
       if(btn){btn.textContent=sec===600?'⏱10分':'⏱5分';btn.classList.remove('active');}
       if(soundOn)toggleSound();
