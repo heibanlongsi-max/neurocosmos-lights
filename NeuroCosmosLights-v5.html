@@ -922,13 +922,17 @@ function startTimer(sec){
   timerInterval=setInterval(()=>{
     timerSec--;
     if(timerSec<=0){
-      timerSec=0;clearInterval(timerInterval);timerInterval=null;timerOn=false;
-      if(btn){btn.textContent=sec===600?'⏱10分':'⏱5分';btn.classList.remove('active');}
-      if(soundOn)toggleSound();
-      stopped=true;
-      const sb=document.getElementById('btn-stop');
-      if(sb){sb.textContent='▶';sb.classList.add('active');}
-      if(animId){cancelAnimationFrame(animId);animId=null;}
+      timerSec=0;clearInterval(timerInterval);timerInterval=null;
+      // ★00:00を1秒間表示してから停止
+      setTimeout(()=>{
+        timerOn=false;
+        if(btn){btn.textContent=sec===600?'⏱10分':'⏱5分';btn.classList.remove('active');}
+        if(soundOn)toggleSound();
+        stopped=true;
+        const sb=document.getElementById('btn-stop');
+        if(sb){sb.textContent='▶';sb.classList.add('active');}
+        if(animId){cancelAnimationFrame(animId);animId=null;}
+      },1000);
     }
   },1000);
 }
